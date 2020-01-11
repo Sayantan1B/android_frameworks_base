@@ -36,6 +36,7 @@ import java.util.Arrays;
  */
 public class KernelCpuSpeedReader {
     private static final String TAG = "KernelCpuSpeedReader";
+    private static final boolean DEBUG = false;
 
     private final String mProcFile;
     private final long[] mLastSpeedTimes;
@@ -82,7 +83,7 @@ public class KernelCpuSpeedReader {
                 speedIndex++;
             }
         } catch (IOException e) {
-            Slog.e(TAG, "Failed to read cpu-freq: " + e.getMessage());
+            if (DEBUG) Slog.e(TAG, "Failed to read cpu-freq: " + e.getMessage());
             Arrays.fill(mDeltaSpeedTimes, 0);
         }
         return mDeltaSpeedTimes;
