@@ -445,6 +445,9 @@
     <!-- Boolean indicating whether or not wifi firmware debugging is enabled -->
     <bool translatable="false" name="config_wifi_enable_wifi_firmware_debugging">true</bool>
 
+    <!-- IpReachability monitor enable/Disable -->
+    <bool translatable="false" name="config_wifi_ipreachability_monitor">false</bool>
+
     <!-- Integer size limit, in KB, for a single WifiLogger ringbuffer -->
     <integer translatable="false" name="config_wifi_logger_ring_buffer_size_limit_kb">32</integer>
 
@@ -1642,8 +1645,11 @@
          Choices are: OFF, DELETE, TRUNCATE, PERSIST and MEMORY.
          PERSIST may improve performance by reducing how often journal blocks are
          reallocated (compared to truncation) resulting in better data block locality
-         and less churn of the storage media. -->
-    <string name="db_default_journal_mode" translatable="false">PERSIST</string>
+         and less churn of the storage media.
+
+         The PERSIST mode results in data persisting in the journal beyond the life of
+         a transaction, so it interacts poorly with SECURE_DELETE. -->
+    <string name="db_default_journal_mode" translatable="false">TRUNCATE</string>
 
     <!-- Maximum size of the persistent journal file in bytes.
          If the journal file grows to be larger than this amount then SQLite will

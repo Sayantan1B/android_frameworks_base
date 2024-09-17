@@ -53,6 +53,7 @@ import java.io.IOException;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.io.Writer;
+import java.util.Collections;
 import java.util.Locale;
 
 /**
@@ -221,6 +222,15 @@ public class ShortcutManagerTest2 extends BaseShortcutManagerTest {
                             .build();
                     assertTrue(getManager().updateShortcuts(list(si)));
                 });
+    }
+
+    public void testShortcutIdTruncated() {
+        ShortcutInfo si = new ShortcutInfo.Builder(getTestContext(),
+                String.join("", Collections.nCopies(Short.MAX_VALUE, "s"))).build();
+
+        assertTrue(
+                "id must be truncated to MAX_ID_LENGTH",
+                si.getId().length() <= ShortcutInfo.MAX_ID_LENGTH);
     }
 
     public void testShortcutInfoParcel() {
@@ -1799,6 +1809,8 @@ public class ShortcutManagerTest2 extends BaseShortcutManagerTest {
 
     public void testReportShortcutUsed() {
         mRunningUsers.put(USER_10, true);
+        mService.updateConfigurationLocked(
+                ShortcutService.ConfigConstants.KEY_SAVE_DELAY_MILLIS + "=1");
 
         runWithCaller(CALLING_PACKAGE_1, USER_10, () -> {
             reset(mMockUsageStatsManagerInternal);

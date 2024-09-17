@@ -290,7 +290,7 @@ public class ShortcutService extends IShortcutService.Stub {
     private CompressFormat mIconPersistFormat;
     private int mIconPersistQuality;
 
-    private int mSaveDelayMillis;
+    int mSaveDelayMillis;
 
     private final IPackageManager mIPackageManager;
     private final PackageManagerInternal mPackageManagerInternal;
@@ -1528,6 +1528,10 @@ public class ShortcutService extends IShortcutService.Stub {
             android.util.EventLog.writeEvent(0x534e4554, "109824443", -1, "");
             throw new SecurityException("Shortcut package name mismatch");
         }
+        final int callingUid = injectBinderCallingUid();
+        if (UserHandle.getUserId(callingUid) != si.getUserId()) {
+            throw new SecurityException("User-ID in shortcut doesn't match the caller");
+        }
     }
 
     private void verifyShortcutInfoPackages(
@@ -2041,10 +2045,11 @@ public class ShortcutService extends IShortcutService.Stub {
                     shortcutId, packageName, userId));
         }
 
+        final ShortcutPackage ps;
         synchronized (mLock) {
             throwIfUserLockedL(userId);
 
-            final ShortcutPackage ps = getPackageShortcutsForPublisherLocked(packageName, userId);
+            ps = getPackageShortcutsForPublisherLocked(packageName, userId);
 
             if (ps.findShortcutById(shortcutId) == null) {
                 Log.w(TAG, String.format("reportShortcutUsed: package %s doesn't have shortcut %s",
@@ -2053,12 +2058,7 @@ public class ShortcutService extends IShortcutService.Stub {
             }
         }
 
-        final long token = injectClearCallingIdentity();
-        try {
-            mUsageStatsManagerInternal.reportShortcutUsage(packageName, shortcutId, userId);
-        } finally {
-            injectRestoreCallingIdentity(token);
-        }
+        ps.reportShortcutUsed(mUsageStatsManagerInternal, shortcutId);
     }
 
     /**

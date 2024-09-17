@@ -254,6 +254,7 @@ import cyanogenmod.power.PerformanceManagerInternal;
 import libcore.io.IoUtils;
 import libcore.util.EmptyArray;
 
+import static android.Manifest.permission.CONTROL_KEYGUARD;
 import static android.Manifest.permission.INTERACT_ACROSS_USERS;
 import static android.Manifest.permission.INTERACT_ACROSS_USERS_FULL;
 import static android.Manifest.permission.MANAGE_ACTIVITY_STACKS;
@@ -4306,6 +4307,29 @@ public final class ActivityManagerService extends ActivityManagerNative
         return procState;
     }
 
+    @GuardedBy("this")
+    private boolean hasActiveInstrumentationLocked(int pid) {
+        if (pid == 0) {
+            return false;
+        }
+        synchronized (mPidsSelfLocked) {
+            ProcessRecord process = mPidsSelfLocked.get(pid);
+            return process != null && process.instrumentationClass != null;
+        }
+    }
+
+    private String getPackageNameByPid(int pid) {
+        synchronized (mPidsSelfLocked) {
+            final ProcessRecord app = mPidsSelfLocked.get(pid);
+
+            if (app != null && app.info != null) {
+                return app.info.packageName;
+            }
+
+            return null;
+        }
+    }
+
     private boolean isCallerShell() {
         final int callingUid = Binder.getCallingUid();
         return callingUid == Process.SHELL_UID || callingUid == Process.ROOT_UID;
@@ -5746,12 +5770,14 @@ public final class ActivityManagerService extends ActivityManagerNative
                         finishForceStopPackageLocked(packageName, pkgUidF);
                     }
 
-                    final Intent intent = new Intent(Intent.ACTION_PACKAGE_DATA_CLEARED,
-                            Uri.fromParts("package", packageName, null));
-                    intent.putExtra(Intent.EXTRA_UID, pkgUidF);
-                    intent.putExtra(Intent.EXTRA_USER_HANDLE, UserHandle.getUserId(pkgUidF));
-                    broadcastIntentInPackage("android", Process.SYSTEM_UID, intent,
-                            null, null, 0, null, null, null, null, false, false, userIdF);
+                    if (succeeded) {
+                        final Intent intent = new Intent(Intent.ACTION_PACKAGE_DATA_CLEARED,
+                                Uri.fromParts("package", packageName, null));
+                        intent.putExtra(Intent.EXTRA_UID, pkgUidF);
+                        intent.putExtra(Intent.EXTRA_USER_HANDLE, UserHandle.getUserId(pkgUidF));
+                        broadcastIntentInPackage("android", Process.SYSTEM_UID, intent,
+                                null, null, 0, null, null, null, null, false, false, userIdF);
+                    }
 
                     if (observer != null) {
                         observer.onRemoveCompleted(packageName, succeeded);
@@ -5794,8 +5820,20 @@ public final class ActivityManagerService extends ActivityManagerNative
             Slog.w(TAG, msg);
             throw new SecurityException(msg);
         }
+        final int callingUid = Binder.getCallingUid();
+        final int callingPid = Binder.getCallingPid();
+        final int callingAppId = UserHandle.getAppId(callingUid);
 
-        userId = mUserController.handleIncomingUser(Binder.getCallingPid(), Binder.getCallingUid(),
+        ProcessRecord proc;
+        synchronized (mPidsSelfLocked) {
+            proc = mPidsSelfLocked.get(callingPid);
+        }
+        final boolean hasKillAllPermission = PERMISSION_GRANTED == checkPermission(
+                android.Manifest.permission.FORCE_STOP_PACKAGES, callingPid, callingUid)
+                || (UserHandle.getAppId(callingUid) > 0 && UserHandle.getAppId(callingUid) < Process.FIRST_APPLICATION_UID)
+                || (proc != null && proc.info.isSystemApp());
+
+        userId = mUserController.handleIncomingUser(callingPid, callingUid,
                 userId, true, ALLOW_FULL_ONLY, "killBackgroundProcesses", null);
         long callingId = Binder.clearCallingIdentity();
         try {
@@ -5807,7 +5845,7 @@ public final class ActivityManagerService extends ActivityManagerNative
                             pm.getPackageUid(packageName, MATCH_DEBUG_TRIAGED_MISSING, userId));
                 } catch (RemoteException e) {
                 }
-                if (appId == -1) {
+                if (appId == -1 || (!hasKillAllPermission && appId != callingAppId)) {
                     Slog.w(TAG, "Invalid packageName: " + packageName);
                     return;
                 }
@@ -5828,6 +5866,22 @@ public final class ActivityManagerService extends ActivityManagerNative
                     + " requires " + android.Manifest.permission.KILL_BACKGROUND_PROCESSES;
             Slog.w(TAG, msg);
             throw new SecurityException(msg);
+        }
+
+        final int callingUid = Binder.getCallingUid();
+        final int callingPid = Binder.getCallingPid();
+
+        ProcessRecord proc;
+        synchronized (mPidsSelfLocked) {
+            proc = mPidsSelfLocked.get(callingPid);
+        }
+        if (callingUid >= Process.FIRST_APPLICATION_UID
+                && (proc == null || !proc.info.isSystemApp())) {
+            final String msg = "Permission Denial: killAllBackgroundProcesses() from pid="
+                    + callingPid + ", uid=" + callingUid + " is not allowed";
+            Slog.w(TAG, msg);
+            // Silently return to avoid existing apps from crashing.
+            return;
         }
 
         final long callingId = Binder.clearCallingIdentity();
@@ -6973,6 +7027,7 @@ public final class ActivityManagerService extends ActivityManagerNative
 
     @Override
     public void keyguardGoingAway(int flags) {
+        enforceCallingPermission(CONTROL_KEYGUARD, "keyguardGoingAway()");
         enforceNotIsolatedCaller("keyguardGoingAway");
         final long token = Binder.clearCallingIdentity();
         try {
@@ -14349,6 +14404,13 @@ public final class ActivityManagerService extends ActivityManagerNative
     @Override
     public void onShellCommand(FileDescriptor in, FileDescriptor out,
             FileDescriptor err, String[] args, ResultReceiver resultReceiver) {
+        final int callingUid = Binder.getCallingUid();
+        if (callingUid != Process.ROOT_UID && callingUid != Process.SHELL_UID) {
+            if (resultReceiver != null) {
+                resultReceiver.send(-1, null);
+            }
+            throw new SecurityException("Shell commands are only callable by root or shell");
+        }
         (new ActivityManagerShellCommand(this, false)).exec(
                 this, in, out, err, args, resultReceiver);
     }
@@ -18947,7 +19009,9 @@ public final class ActivityManagerService extends ActivityManagerNative
             IInstrumentationWatcher watcher, IUiAutomationConnection uiAutomationConnection,
             int userId, String abiOverride) {
         enforceNotIsolatedCaller("startInstrumentation");
-        userId = mUserController.handleIncomingUser(Binder.getCallingPid(), Binder.getCallingUid(),
+        final int callingUid = Binder.getCallingUid();
+        final int callingPid = Binder.getCallingPid();
+        userId = mUserController.handleIncomingUser(callingPid, callingUid,
                 userId, false, ALLOW_FULL_ONLY, "startInstrumentation", null);
         // Refuse possible leaked file descriptors
         if (arguments != null && arguments.hasFileDescriptors()) {
@@ -18987,10 +19051,22 @@ public final class ActivityManagerService extends ActivityManagerNative
                 String msg = "Permission Denial: starting instrumentation "
                         + className + " from pid="
                         + Binder.getCallingPid()
-                        + ", uid=" + Binder.getCallingPid()
+                        + ", uid=" + Binder.getCallingUid()
                         + " not allowed because package " + ii.packageName
                         + " does not have a signature matching the target "
                         + ii.targetPackage;
+                reportStartInstrumentationFailureLocked(watcher, className, msg);
+                throw new SecurityException(msg);
+            }
+
+            if (!Build.IS_DEBUGGABLE && callingUid != Process.ROOT_UID && callingUid != Process.SHELL_UID
+                    && callingUid != Process.SYSTEM_UID && !hasActiveInstrumentationLocked(callingPid)) {
+                // If it's not debug build and not called from root/shell/system uid, reject it.
+                final String msg = "Permission Denial: instrumentation test "
+                        + className + " from pid=" + callingPid + ", uid=" + callingUid
+                        + ", pkgName=" + getPackageNameByPid(callingPid)
+                        + " not allowed because it's not started from SHELL";
+                Slog.wtfQuiet(TAG, msg);
                 reportStartInstrumentationFailureLocked(watcher, className, msg);
                 throw new SecurityException(msg);
             }
